@@ -25,6 +25,8 @@
 
 A fresh AnythingLLM with no password hands an API key to anyone who asks for one. Behind a public hostname, that is anyone at all. This template does not start without a password.
 
+That is the documented single-user default, not a flaw found around the documentation: AnythingLLM's [Security and Access](https://docs.anythingllm.com/features/security-and-access) page has the password as a switch that starts off ("Password Protect Instance"), and its [API Access & Keys](https://docs.anythingllm.com/features/api) page warns that anyone holding a key can use the API. What neither page says is what the measurement below shows: with the switch off, a request carrying no credentials is handed a key.
+
 ## Three decisions the defaults make for you
 
 **A password, always.** `ANYTHINGLLM_PASSWORD` and `ANYTHINGLLM_JWT_SECRET` are required: `docker compose up` stops and names the missing one. Measured on 1.18.0 with no password set, `POST /api/system/generate-api-key` answers 200 with a working key to a request that carries no credentials at all. With one, the same request is a 401, and so is listing the workspaces. CI checks both refusals, and that a wrong password is refused, on every run.

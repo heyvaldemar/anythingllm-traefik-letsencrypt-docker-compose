@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README links AnythingLLM's own documentation** for the password default (Security and Access) and API keys (API Access & Keys), so the password requirement reads as what it is: a documented default made safe, not a flaw found around the documentation.
+
 ## [1.0.0] - 2026-10-19
 
 ### Added
