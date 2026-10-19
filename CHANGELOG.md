@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The README links AnythingLLM's own documentation** for the password default (Security and Access) and API keys (API Access & Keys), so the password requirement reads as what it is: a documented default made safe, not a flaw found around the documentation.
 
+### Fixed
+
+- **What a restore sets aside stays inside the volume.** Here that is `tmp`. Moving them through the backups container's `/tmp` copied them out and back, and the copy counted against the container's memory limit; inside the volume a move is a rename and nothing is copied. In the Ollama template, where Open WebUI's cache holds models, that copy got the restore killed for memory in three CI runs of about forty.
+
 ## [1.0.0] - 2026-10-19
 
 ### Added
