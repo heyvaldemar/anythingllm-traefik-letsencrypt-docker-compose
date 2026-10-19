@@ -1,0 +1,322 @@
+# Image pins live HERE, as interpolation defaults, so `git pull` (or
+# re-downloading this file) delivers the exact version combination this
+# repository has tested — no .env editing required. Setting the matching
+# variable in .env overrides the default for anyone who wants to pin
+# differently; .env itself carries only secrets and deliberate overrides.
+# CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
+# the pins from these lines — this block is the single source of truth.
+x-images:
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:0f6150202bc1fed72a7bd2107460eaa510e5b8a905f3fdb5b84f2c8619c33368}}
+  ollama: &ollama-image ${OLLAMA_IMAGE_TAG:-ollama/ollama:${OLLAMA_IMAGE_VERSION:-0.40.6@sha256:265409e1d931028a8f7d5a32bcbafddd7bffbc6cc629d77efe9560adf692a5e7}}
+  anythingllm: &anythingllm-image ${ANYTHINGLLM_IMAGE_TAG:-mintplexlabs/anythingllm:${ANYTHINGLLM_IMAGE_VERSION:-1.18.0@sha256:5461782e7db41318a516925949a8f8366e258dd576411fca7961fe77dff054cc}}
+
+networks:
+  traefik-network:
+    external: true
+  # Ollama answers on this network and nowhere else. Its API has no
+  # authentication of its own, so publishing it would hand the machine's
+  # compute, and every model on it, to anyone who finds the port.
+  anythingllm-network:
+    external: true
+
+volumes:
+  anythingllm-storage:
+  ollama-data:
+  traefik-certificates:
+  anythingllm-backups:
+
+services:
+  anythingllm:
+    image: *anythingllm-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # NO CAPABILITIES AT ALL, AND NOT SYS_ADMIN. AnythingLLM's own Docker
+    # guide adds SYS_ADMIN so the Chromium it uses to read web links can start
+    # its sandbox. Measured on 1.18.0 without it: Chromium refuses to start
+    # ("No usable sandbox"), the collector falls back to a plain fetch, and a
+    # static page is imported in full. A page that only exists once its
+    # JavaScript has run comes back empty. SYS_ADMIN is most of root; a link
+    # importer is not worth it by default. README, "Reading web links", says
+    # how to add it back on purpose.
+    cap_drop:
+      - ALL
+    # Resource limits as .env-overridable defaults (e.g. ANYTHINGLLM_MEMORY_LIMIT=4g);
+    # the override survives every git pull. The built-in embedder runs in
+    # this container, so large document imports want more than the default.
+    deploy:
+      resources:
+        limits:
+          memory: ${ANYTHINGLLM_MEMORY_LIMIT:-2g}
+          cpus: "${ANYTHINGLLM_CPU_LIMIT:-2.0}"
+        reservations:
+          memory: ${ANYTHINGLLM_MEMORY_RESERVATION:-512m}
+          cpus: "${ANYTHINGLLM_CPU_RESERVATION:-0.25}"
+    volumes:
+      - anythingllm-storage:/app/server/storage
+    environment:
+      STORAGE_DIR: /app/server/storage
+      # A PASSWORD, ALWAYS. Without AUTH_TOKEN a fresh instance answers
+      # POST /api/system/generate-api-key to anyone who reaches it; behind a
+      # public hostname that is anyone at all. The variable is required: the
+      # stack does not start without it.
+      AUTH_TOKEN: ${ANYTHINGLLM_PASSWORD:?set in .env - see .env.example}
+      JWT_SECRET: ${ANYTHINGLLM_JWT_SECRET:?set in .env - see .env.example}
+      # Everything runs on this host: Ollama for the model, the built-in
+      # embedder for the vectors, LanceDB on the storage volume for search.
+      LLM_PROVIDER: ollama
+      OLLAMA_BASE_PATH: http://ollama:11434
+      OLLAMA_MODEL_PREF: ${ANYTHINGLLM_CHAT_MODEL:-llama3.2:3b}
+      OLLAMA_MODEL_TOKEN_LIMIT: ${ANYTHINGLLM_CHAT_MODEL_TOKEN_LIMIT:-4096}
+      EMBEDDING_ENGINE: native
+      VECTOR_DB: lancedb
+      DISABLE_TELEMETRY: "true"
+    networks:
+      - anythingllm-network
+      - traefik-network
+    healthcheck:
+      # The image's own check: GET /api/ping on the port the server listens on.
+      test: ["CMD", "/bin/bash", "/usr/local/bin/docker-healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # Match incoming requests on a specific hostname
+      - "traefik.http.routers.anythingllm.rule=Host(`${ANYTHINGLLM_HOSTNAME:?set in .env - see .env.example}`)"
+      # Assign the router to a named Traefik service
+      - "traefik.http.routers.anythingllm.service=anythingllm"
+      # Use the 'websecure' (HTTPS) entry point
+      - "traefik.http.routers.anythingllm.entrypoints=websecure"
+      # Define the internal container port for routing
+      - "traefik.http.services.anythingllm.loadbalancer.server.port=3001"
+      # Enable TLS on this router
+      - "traefik.http.routers.anythingllm.tls=true"
+      # Use Let's Encrypt for certificate management
+      - "traefik.http.routers.anythingllm.tls.certresolver=letsencrypt"
+      # Pass the original Host header to the container
+      - "traefik.http.services.anythingllm.loadbalancer.passhostheader=true"
+      # Apply a compression middleware
+      - "traefik.http.routers.anythingllm.middlewares=compresstraefik"
+      # Define settings for the compression middleware
+      - "traefik.http.middlewares.compresstraefik.compress=true"
+      # Specify which Docker network Traefik should use for routing
+      - "traefik.docker.network=traefik-network"
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+      traefik:
+        condition: service_healthy
+
+  ollama:
+    image: *ollama-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # conformance: allow-no-limits - the working set here is whichever model
+    # you load, not anything this file can know. A 3B model at Q4 wants about
+    # 2.5 GB resident and a 70B wants twenty times that, so any ceiling shipped
+    # in the template is a guess that becomes an OOM kill in the middle of
+    # somebody's answer, on the pull that introduced it. Once you know which
+    # models you run, add a deploy.resources.limits block here with headroom
+    # above the largest of them.
+    entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
+    volumes:
+      - ollama-data:/root/.ollama
+      - ./entrypoint.sh:/entrypoint.sh
+    environment:
+      # Pulled on every start, so the chat model AnythingLLM asks for is there.
+      MODELS: ${OLLAMA_INSTALL_MODELS-llama3.2:3b}
+    networks:
+      - anythingllm-network
+    # Uncomment to enable NVIDIA GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: ${OLLAMA_GPU_COUNT:-all}
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  traefik:
+    image: *traefik-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what this image's
+    # entrypoint needs (bind :80/:443, chown its data directory, drop to
+    # its service user).
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: ${TRAEFIK_MEMORY_LIMIT:-256m}
+          cpus: "${TRAEFIK_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${TRAEFIK_MEMORY_RESERVATION:-64m}
+          cpus: "${TRAEFIK_CPU_RESERVATION:-0.1}"
+    command:
+      # Set the log level (DEBUG, INFO, WARN, ERROR)
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-WARN}"
+      # Enable the built-in API and web-based dashboard
+      - "--api.dashboard=true"
+      # Enable the /ping endpoint so we can health-check Traefik
+      - "--ping=true"
+      # Assign the /ping endpoint to a dedicated entry point on port 8082
+      - "--ping.entrypoint=ping"
+      - "--entrypoints.ping.address=:8082"
+      # Define the primary HTTP entry point on port 80
+      - "--entrypoints.web.address=:80"
+      # Define the secure (HTTPS) entry point on port 443
+      - "--entrypoints.websecure.address=:443"
+      # Timeouts on the HTTPS entry point. A long document upload needs a
+      # read timeout above Traefik's 60 s default on a slow link; a model
+      # streaming its answer needs no write timeout at all. Set in .env to tune.
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=${TRAEFIK_READ_TIMEOUT:-600s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=${TRAEFIK_WRITE_TIMEOUT:-0s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=${TRAEFIK_IDLE_TIMEOUT:-180s}"
+      # HTTP -> HTTPS redirect at entrypoint level
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Enable the Docker provider to detect containers and their labels
+      - "--providers.docker=true"
+      # Point Traefik to the Docker socket
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      # Prevent automatic exposure of all containers; only expose containers
+      # with "traefik.enable=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Use ACME (Let's Encrypt) to generate/renew certificates via TLS challenge
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      # The email address used by Let's Encrypt for renewal notices
+      - "--certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL:?set in .env - see .env.example}"
+      # The file where ACME certificates are stored inside the container
+      - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme/acme.json"
+      # Enable Prometheus metrics
+      - "--metrics.prometheus=true"
+      # Configure Prometheus histogram buckets
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+      # Check for newer Traefik versions and optionally log that info
+      - "--global.checknewversion=true"
+      # Disable sending anonymous usage data to the Traefik maintainers
+      - "--global.sendanonymoususage=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/etc/traefik/acme
+    networks:
+      - traefik-network
+    ports:
+      - "80:80"
+      - "443:443"
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:8082/ping", "--spider"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # A router to expose the Traefik dashboard
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_HOSTNAME:?set in .env - see .env.example}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      # Basic Authentication for the Traefik dashboard
+      - "traefik.http.routers.dashboard.middlewares=authtraefik"
+      - "traefik.http.middlewares.authtraefik.basicauth.users=${TRAEFIK_BASIC_AUTH:?set in .env - see .env.example for htpasswd generation}"
+      # Specify the internal server port to the dashboard service
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+      # Pass the original Host header to the backend
+      - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
+    restart: unless-stopped
+
+  backups:
+    image: python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what reading the storage
+    # volume as root and writing archives that keep the files' owners needs.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    # Resource limits as .env-overridable defaults (e.g. ANYTHINGLLM_BACKUPS_MEMORY_LIMIT=1g);
+    # the override survives every git pull.
+    deploy:
+      resources:
+        limits:
+          memory: ${ANYTHINGLLM_BACKUPS_MEMORY_LIMIT:-256m}
+          cpus: "${ANYTHINGLLM_BACKUPS_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${ANYTHINGLLM_BACKUPS_MEMORY_RESERVATION:-32m}
+          cpus: "${ANYTHINGLLM_BACKUPS_CPU_RESERVATION:-0.1}"
+    # Every cycle: a consistent online copy of AnythingLLM's SQLite database
+    # through Python's backup API (no application stop), then a tar.gz of the
+    # rest of the storage volume: the LanceDB vector store, the documents, the
+    # embedder's model and the instance's keys. The live database files are
+    # excluded, the copy above is the consistent one. Logs OK/FAILED per
+    # artefact; a failed archive is kept as .failed for diagnosis; retention 0
+    # disables pruning.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep "$$ANYTHINGLLM_BACKUP_INIT_SLEEP"
+        while true; do
+          STAMP="$$(date +%Y-%m-%d_%H-%M)"
+          for db in anythingllm.db; do
+            DB_FILE="$$ANYTHINGLLM_BACKUPS_PATH/$$ANYTHINGLLM_BACKUP_NAME-$${db%%.*}-$$STAMP.sqlite3"
+            echo "[$$(date -Iseconds)] Starting database backup of $$db to $$DB_FILE.gz"
+            if [ ! -f "/data/$$db" ]; then
+              echo "[$$(date -Iseconds)] Database $$db not present yet (first start?) - skipped this cycle"
+            elif python3 -c "import sqlite3,sys; s=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()" "/data/$$db" "$$DB_FILE" && gzip -f "$$DB_FILE"; then
+              echo "[$$(date -Iseconds)] Database backup OK: $$DB_FILE.gz ($$(stat -c %s "$$DB_FILE.gz") bytes)"
+            else
+              echo "[$$(date -Iseconds)] Database backup FAILED - $$db could not be copied consistently" >&2
+              rm -f "$$DB_FILE" "$$DB_FILE.gz"
+            fi
+          done
+          DATA_FILE="$$ANYTHINGLLM_BACKUPS_PATH/$$ANYTHINGLLM_DATA_BACKUP_NAME-$$STAMP.tar.gz"
+          echo "[$$(date -Iseconds)] Starting data backup to $$DATA_FILE"
+          tar -C /data --exclude='./anythingllm.db' --exclude='./anythingllm.db-wal' --exclude='./anythingllm.db-shm' --exclude='./tmp' -zcpf "$$DATA_FILE.partial" .; RC=$$?
+          # BusyBox tar exits 1 for everything from "file changed" to "cannot
+          # write", so the exit code proves nothing: verify the archive itself.
+          if [ "$$RC" -le 1 ] && [ -f "$$DATA_FILE.partial" ] && gzip -t "$$DATA_FILE.partial" 2>/dev/null; then
+            mv "$$DATA_FILE.partial" "$$DATA_FILE";
+            echo "[$$(date -Iseconds)] Data backup OK: $$DATA_FILE ($$(stat -c %s "$$DATA_FILE") bytes)"
+          else
+            echo "[$$(date -Iseconds)] Data backup FAILED - partial file kept as $$DATA_FILE.failed for diagnosis" >&2
+            mv "$$DATA_FILE.partial" "$$DATA_FILE.failed" 2>/dev/null || true
+          fi
+          if [ "$${ANYTHINGLLM_BACKUP_PRUNE_DAYS:-0}" -ge 1 ]; then
+            find "$$ANYTHINGLLM_BACKUPS_PATH" -type f \( -name "$$ANYTHINGLLM_BACKUP_NAME-*" -o -name "$$ANYTHINGLLM_DATA_BACKUP_NAME-*" \) -mtime "+$$ANYTHINGLLM_BACKUP_PRUNE_DAYS" -delete
+          fi
+          sleep "$$ANYTHINGLLM_BACKUP_INTERVAL"
+        done
+    volumes:
+      - anythingllm-storage:/data
+      - anythingllm-backups:${ANYTHINGLLM_BACKUPS_PATH:-/srv/anythingllm/backups}
+    environment:
+      ANYTHINGLLM_BACKUP_INIT_SLEEP: ${ANYTHINGLLM_BACKUP_INIT_SLEEP:-30m}
+      ANYTHINGLLM_BACKUP_INTERVAL: ${ANYTHINGLLM_BACKUP_INTERVAL:-24h}
+      ANYTHINGLLM_BACKUP_PRUNE_DAYS: ${ANYTHINGLLM_BACKUP_PRUNE_DAYS:-7}
+      ANYTHINGLLM_BACKUPS_PATH: ${ANYTHINGLLM_BACKUPS_PATH:-/srv/anythingllm/backups}
+      ANYTHINGLLM_BACKUP_NAME: ${ANYTHINGLLM_BACKUP_NAME:-anythingllm-database-backup}
+      ANYTHINGLLM_DATA_BACKUP_NAME: ${ANYTHINGLLM_DATA_BACKUP_NAME:-anythingllm-data-backup}
+    restart: unless-stopped

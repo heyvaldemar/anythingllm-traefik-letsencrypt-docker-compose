@@ -1,0 +1,310 @@
+name: Deployment Verification
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Daily rebuild: security patches should not wait for a weekly slot.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: deployment-verification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Authenticated requests avoid the anonymous API rate limit that shared
+  # GitHub runners regularly hit (api.github.com answers 403 otherwise).
+  GH_API_TOKEN: ${{ github.token }}
+
+jobs:
+  lint:
+    name: Lint shell scripts and workflow YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: ShellCheck
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck-alpine:stable \
+            shellcheck ./*.sh tests/*.sh
+
+      - name: actionlint (GitHub Actions workflow linting)
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            rhysd/actionlint:1.7.12 \
+            -color
+
+  scan-trivy:
+    name: Scan pinned upstream image with Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      # Image refs are read from the compose file's x-images defaults at
+      # runtime — single source of truth.
+      fail-fast: false
+      matrix:
+        include:
+          - name: anythingllm
+            env_var: ANYTHINGLLM_IMAGE_TAG
+          - name: ollama
+            env_var: OLLAMA_IMAGE_TAG
+          - name: traefik
+            env_var: TRAEFIK_IMAGE_TAG
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned ${{ matrix.name }} image from the compose file
+        id: pin
+        env:
+          ENV_VAR: ${{ matrix.env_var }}
+        run: |
+          image="$(grep -m1 -oE "\\$\\{${ENV_VAR}:-.*" anythingllm-traefik-letsencrypt-docker-compose.yml | sed -E -e ':a' -e 's/\$\{[A-Z0-9_]+:-([^{}]*)\}/\1/' -e 'ta')"
+          if [ -z "$image" ]; then
+            echo "${ENV_VAR} default not found in the compose x-images block" >&2
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy scan of ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.pin.outputs.image }}
+          format: sarif
+          output: trivy-${{ matrix.name }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          # FINDINGS DO NOT FAIL THIS STEP; A SCAN THAT CANNOT FINISH DOES.
+          # Stated here rather than left to the action's default, because
+          # this job no longer carries continue-on-error and the difference
+          # now decides whether a red run means a new CVE upstream or a
+          # scanner that died before it could report one.
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF (${{ matrix.name }}) to GitHub Security
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-${{ matrix.name }}.sarif
+          category: trivy-${{ matrix.name }}
+
+  deploy-and-test:
+    name: docker compose up + RAG through Traefik + backup and restore
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    env:
+      NETWORK_ONE: anythingllm-network
+      NETWORK_TWO: traefik-network
+      DOCKER_COMPOSE_FILE: anythingllm-traefik-letsencrypt-docker-compose.yml
+      APP_HOSTNAME: anythingllm.heyvaldemar.net
+      APP_TRAEFIK_HOSTNAME: traefik.anythingllm.heyvaldemar.net
+      COMPOSE_PROJECT_NAME: anythingllm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create necessary Docker networks
+        run: |
+          docker network create "$NETWORK_ONE" || true
+          docker network create "$NETWORK_TWO" || true
+
+      - name: Generate test .env with ephemeral credentials
+        # The real .env is gitignored. CI generates throwaway credentials so
+        # `docker compose up` succeeds without committing secrets to the
+        # repo: the AnythingLLM password and signing secret are new on every
+        # run. No *_IMAGE_TAG values on purpose: the compose file's x-images
+        # defaults apply, so CI always tests exactly the pins the template
+        # ships to users who run it unmodified. The chat model is the smallest
+        # that answers at all: what is tested is the path, not the prose.
+        run: |
+          umask 077
+          cat > .env <<EOF
+          TRAEFIK_ACME_EMAIL=ci@example.com
+          TRAEFIK_HOSTNAME=${APP_TRAEFIK_HOSTNAME}
+          TRAEFIK_BASIC_AUTH=traefikadmin:\$\$2y\$\$10\$\$sMzJfirKC75x/hVpiINeZOiSm.Jkity9cn4KwNkRvO7hSQVFc5FLO
+          ANYTHINGLLM_HOSTNAME=${APP_HOSTNAME}
+          ANYTHINGLLM_PASSWORD=$(openssl rand -hex 16)
+          ANYTHINGLLM_JWT_SECRET=$(openssl rand -hex 32)
+          ANYTHINGLLM_CHAT_MODEL=qwen2.5:0.5b
+          OLLAMA_INSTALL_MODELS=qwen2.5:0.5b
+          ANYTHINGLLM_BACKUP_INIT_SLEEP=15s
+          ANYTHINGLLM_BACKUP_INTERVAL=60s
+          EOF
+          echo "Generated ephemeral .env for CI run"
+
+      - name: Upgrade drill — the previous release comes up first, on the volumes this run will upgrade
+        # A fresh stack proves the new image starts. It proves nothing about the
+        # data a deployed host already has: whether the new application accepts
+        # the old storage, whether its migrations run on a populated database.
+        # So the previous release is started first, on this project's volumes,
+        # and the ordinary `up -d` below then recreates the changed containers on
+        # top of it - which is exactly what `git pull && docker compose up -d`
+        # does on a deployed host. Every check that follows judges the upgraded
+        # stack, not a fresh one.
+        run: |
+          prev="$(git ls-remote --tags --sort=-v:refname origin 'v*' | grep -v '\^{}' | head -1 | sed 's|.*refs/tags/||')"
+          if [ -z "$prev" ]; then
+            echo "no previous release: nothing to upgrade from, the fresh start below is the whole test"
+            exit 0
+          fi
+          git fetch --depth=1 --quiet origin "refs/tags/$prev:refs/tags/$prev"
+          if git diff --quiet "$prev" -- "$DOCKER_COMPOSE_FILE"; then
+            echo "the compose file is unchanged since $prev: nothing to drill"
+            exit 0
+          fi
+          git show "$prev:$DOCKER_COMPOSE_FILE" > .upgrade-drill-previous.yml
+          echo "starting $prev on this project's volumes"
+          docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" up -d
+          # Healthy means: every container is running and healthy (or running
+          # with no health check), or exited 0 (a one-shot init container).
+          bad=""
+          for _ in $(seq 1 60); do
+            bad="$(docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" ps -a --format json \
+              | jq -rs '[.[] | select((.State == "running" and (.Health == "" or .Health == "healthy")) or (.State == "exited" and .ExitCode == 0) | not)] | map("\(.Service):\(.State)/\(.Health)") | join(" ")')"
+            [ -z "$bad" ] && break
+            sleep 10
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::the previous release ($prev) did not come up with this run's .env: $bad. Either the variable contract changed - then the changelog must say so - or $prev was never green here."
+            docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" logs --tail 80
+            exit 1
+          fi
+          echo "$prev is up and healthy; stopping it and keeping its volumes"
+          docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" down
+          rm -f .upgrade-drill-previous.yml
+          echo "the start below is now an upgrade from $prev"
+
+      - name: Start up services using Docker Compose
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" up -d
+
+      - name: Every volume an image declares is one this stack names
+        # A VOLUME the image declares and no mount covers becomes an anonymous
+        # volume: it holds data, the backups never see it, and a down/up gives
+        # the container an empty one. Anonymous volumes this stack keeps on
+        # purpose are listed, with the reason, in .github/anonymous-volumes as
+        # "service /path reason".
+        run: |
+          allowed="$(grep -vE '^[[:space:]]*(#|$)' .github/anonymous-volumes 2>/dev/null | awk '{print $1" "$2}' || true)"
+          bad=""
+          for c in $(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"); do
+            svc="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")"
+            for m in $(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}={{.Destination}} {{end}}{{end}}' "$c"); do
+              [[ "${m%%=*}" =~ ^[0-9a-f]{64}$ ]] || continue
+              grep -qxF "$svc ${m#*=}" <<<"$allowed" || bad="$bad $svc:${m#*=}"
+            done
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::anonymous volumes no named volume covers:$bad. Mount a named volume there, or list it in .github/anonymous-volumes with the reason."
+            exit 1
+          fi
+          echo "every volume the images declare is named, or listed as anonymous on purpose"
+
+      - name: Modify /etc/hosts for internal routing
+        run: |
+          echo "127.0.0.1 $APP_HOSTNAME" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 $APP_TRAEFIK_HOSTNAME" | sudo tee -a /etc/hosts
+
+      - name: Print Docker Compose services status
+        run: docker ps
+
+      - name: Wait for AnythingLLM through Traefik, and for the chat model
+        run: |
+          # shellcheck disable=SC2016
+          timeout 8m bash -c 'until curl -fsk "https://$APP_HOSTNAME/api/ping" | grep -q online; do
+            echo "Waiting for AnythingLLM..."
+            sleep 10
+          done'
+          curl -fsk "https://$APP_HOSTNAME/api/ping"; echo
+          # shellcheck disable=SC2016
+          timeout 8m bash -c 'until docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs ollama 2>/dev/null | grep -q "All models installed"; do
+            echo "Waiting for Ollama to pull the chat model..."
+            sleep 10
+          done'
+          echo "the chat model is in place"
+
+      - name: Ollama is not reachable from outside the stack
+        # Ollama's API has no authentication. The ollama template this one
+        # descends from published it on port 11434; here it lives on the
+        # internal network only, and this is the check that keeps it there.
+        run: |
+          if curl -s --max-time 5 "http://127.0.0.1:11434/api/version" >/dev/null; then
+            echo "::error::Ollama answered on the host's port 11434: its unauthenticated API is published"
+            exit 1
+          fi
+          echo "nothing answers on the host's port 11434"
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T anythingllm \
+            bash -c 'curl -fs http://ollama:11434/api/version' && echo " <- and AnythingLLM reaches it inside"
+
+      - name: Verify a backup is produced and valid
+        # Log-driven: the file named in a 'backup OK' line is complete by
+        # definition, so this never races an archive still being written.
+        run: |
+          # shellcheck disable=SC2016
+          # The application creates its database on first start, later than the
+          # first backup cycle; wait for the cycle that actually copied it.
+          timeout 6m bash -c 'until docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -qE "Database backup (OK|FAILED)"; do echo "Waiting for a backup cycle that saw the database..."; sleep 10; done'
+          db=$(docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep "Database backup OK" | tail -1 | sed -E 's/.*Database backup OK: ([^ ]+) .*/\1/')
+          [ -n "$db" ] || { echo "::error::no 'Database backup OK' line"; exit 1; }
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T backups sh -c "gunzip -c '$db' > /tmp/check.db && python3 -c \"import sqlite3; c=sqlite3.connect('/tmp/check.db'); r=c.execute('pragma integrity_check').fetchone()[0]; print('integrity:', r); raise SystemExit(0 if r=='ok' else 1)\"" && echo "Database backup valid: $db"
+          data=$(docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep "Data backup OK" | tail -1 | sed -E 's/.*Data backup OK: ([^ ]+) .*/\1/')
+          [ -n "$data" ] || { echo "::error::no 'Data backup OK' line - the data archive failed"; exit 1; }
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T backups sh -c "tar -tzf '$data' > /dev/null" && echo "Data backup valid: $data"
+          docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -i "backup FAILED" && { echo "::error::the backups log reports a failure"; exit 1; } || true
+
+      - name: Run the RAG end-to-end test
+        # Nothing reachable without the password; the password gives a session
+        # and the session an API key; a document is embedded and found by a
+        # vector search; a question about it is answered by the model with that
+        # document as the source.
+        env:
+          E2E_STATE: ${{ runner.temp }}/anythingllm-e2e.env
+        run: ./tests/e2e-rag.sh
+
+      - name: Run the backup/restore end-to-end tests
+        # Scenarios against the live stack: required-env guard, backup set
+        # produced, archive and database copy valid, failure detected when the
+        # backups directory cannot be written, restore genuinely replaces the
+        # data (a workspace made after the backup gone, the RAG workspace and
+        # its vectors back, the API key in the restored database working),
+        # prune keeps recent files. Same script a maintainer runs on a staging
+        # copy.
+        env:
+          E2E_STATE: ${{ runner.temp }}/anythingllm-e2e.env
+        run: ./tests/e2e-backup-restore.sh
+
+      - name: Wait for the Traefik dashboard to be ready
+        run: |
+          # shellcheck disable=SC2016
+          timeout 5m bash -c 'while ! curl -fsSLk --write-out "%{http_code}" --output /dev/null "https://$APP_TRAEFIK_HOSTNAME" | grep -E "200|401"; do
+            echo "Waiting for the dashboard to be ready..."
+            sleep 10
+          done'
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs
+
+      - name: Shutdown Docker Compose services
+        if: always()
+        run: docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" down
