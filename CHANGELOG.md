@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-19
+
 ### Added
 
 - **AnythingLLM behind Traefik, answering from your documents on your own host.** `mintplexlabs/anythingllm` 1.18.0, Ollama 0.40.6 and Traefik 3.7, pinned by digest. Ollama is the model (default `llama3.2:3b`), AnythingLLM's built-in embedder makes the vectors and LanceDB on the storage volume searches them.
@@ -18,4 +20,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tests/e2e-backup-restore.sh`**: a backup set produced and valid, a failed cycle detected, and a restore after which the post-backup workspace is gone, the RAG workspace and its vectors are back, and the API key from the restored database works.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/commits/main
+[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/releases/tag/v1.0.0
