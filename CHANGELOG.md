@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.0.6] - 2026-10-23
+
 ### Changed
 
 - **`ollama/ollama:0.40.8` moved to `ollama/ollama:0.40.9`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
@@ -63,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tests/e2e-backup-restore.sh`**: a backup set produced and valid, a failed cycle detected, and a restore after which the post-backup workspace is gone, the RAG workspace and its vectors are back, and the API key from the restored database works.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.2...v1.0.3
