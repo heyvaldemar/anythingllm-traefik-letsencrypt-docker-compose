@@ -119,7 +119,7 @@ Every release carries three files made on GitHub's runner with a short-lived ide
 ```bash
 cosign verify-blob anythingllm-traefik-letsencrypt-docker-compose-<tag>.tar.gz \
   --bundle anythingllm-traefik-letsencrypt-docker-compose-<tag>.tar.gz.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/' \
+  --certificate-identity https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/.github/workflows/release-assets.yml@refs/tags/<tag> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 slsa-verifier verify-artifact anythingllm-traefik-letsencrypt-docker-compose-<tag>.tar.gz \
@@ -128,7 +128,7 @@ slsa-verifier verify-artifact anythingllm-traefik-letsencrypt-docker-compose-<ta
   --source-tag <tag>
 ```
 
-The workflow that makes them is [`release-assets.yml`](.github/workflows/release-assets.yml).
+The identity is exact: this repository's `release-assets.yml`, on the tag you deploy. A signature from any other workflow, or from this one on another ref, fails the check. The workflow that makes them is [`release-assets.yml`](.github/workflows/release-assets.yml).
 
 ## Production checklist
 
