@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.0] - 2026-11-22
+
 ### Security
 
 - **`/api/utils/metrics` is off.** It answers anyone, signed in or not, with the version, the user mode (single or multi) and the disk usage: a version is what someone needs to pick an exploit. 1.20.0 added `DISABLE_METRICS_ENDPOINT`, and the compose file now sets it from `ANYTHINGLLM_DISABLE_METRICS_ENDPOINT`, default `true`, so the endpoint answers 404. CI requires that 404 through Traefik. The cost is the version line in the settings sidebar, which reads it; `ANYTHINGLLM_DISABLE_METRICS_ENDPOINT=false` in `.env` brings both back.
@@ -165,7 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tests/e2e-backup-restore.sh`**: a backup set produced and valid, a failed cycle detected, and a restore after which the post-backup workspace is gone, the RAG workspace and its vectors are back, and the API key from the restored database works.
 - **`update.sh`**: moves between release tags, refuses to cross a major version unattended, refuses to run over local changes, names any new required variable before anything has moved.
 
-[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.18...HEAD
+[Unreleased]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.18...v1.1.0
 [1.0.18]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.17...v1.0.18
 [1.0.17]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.16...v1.0.17
 [1.0.16]: https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/compare/v1.0.15...v1.0.16
