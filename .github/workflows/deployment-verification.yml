@@ -282,8 +282,10 @@ jobs:
         run: |
           # shellcheck disable=SC2016
           # The application creates its database on first start, later than the
-          # first backup cycle; wait for the cycle that actually copied it.
-          timeout 6m bash -c 'until docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep -qE "Database backup (OK|FAILED)"; do echo "Waiting for a backup cycle that saw the database..."; sleep 10; done'
+          # first backup cycle; wait for the cycle that actually copied it, and
+          # for that cycle's data archive, which is written after the database
+          # copy and takes longer once the volume holds the embedder's model.
+          timeout 6m bash -c 'until docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs --no-log-prefix backups 2>/dev/null | awk "/Database backup (OK|FAILED)/ { d = NR } /Data backup (OK|FAILED)/ { if (d && NR > d) f = 1 } END { exit !f }"; do echo "Waiting for a backup cycle that saw the database, and its data archive..."; sleep 10; done'
           db=$(docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" logs backups 2>/dev/null | grep "Database backup OK" | tail -1 | sed -E 's/.*Database backup OK: ([^ ]+) .*/\1/')
           [ -n "$db" ] || { echo "::error::no 'Database backup OK' line"; exit 1; }
           docker compose -f "$DOCKER_COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T backups sh -c "gunzip -c '$db' > /tmp/check.db && python3 -c \"import sqlite3; c=sqlite3.connect('/tmp/check.db'); r=c.execute('pragma integrity_check').fetchone()[0]; print('integrity:', r); raise SystemExit(0 if r=='ok' else 1)\"" && echo "Database backup valid: $db"
