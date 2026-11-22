@@ -162,6 +162,8 @@ jobs:
         # top of it - which is exactly what `git pull && docker compose up -d`
         # does on a deployed host. Every check that follows judges the upgraded
         # stack, not a fresh one.
+        env:
+          SURVIVE_STATE: ${{ runner.temp }}/anythingllm-survive.env
         run: |
           prev="$(git ls-remote --tags --sort=-v:refname origin 'v*' | grep -v '\^{}' | head -1 | sed 's|.*refs/tags/||')"
           if [ -z "$prev" ]; then
@@ -190,7 +192,11 @@ jobs:
             docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" logs --tail 80
             exit 1
           fi
-          echo "$prev is up and healthy; stopping it and keeping its volumes"
+          echo "$prev is up and healthy"
+          # Vectors this release writes, for the upgraded stack to read: a
+          # document embedded into a workspace of its own, with an API key.
+          ./tests/e2e-vectors-survive.sh seed
+          echo "stopping $prev and keeping its volumes"
           docker compose -f .upgrade-drill-previous.yml -p "$COMPOSE_PROJECT_NAME" down
           rm -f .upgrade-drill-previous.yml
           echo "the start below is now an upgrade from $prev"
@@ -242,6 +248,20 @@ jobs:
             sleep 10
           done'
           echo "the chat model is in place"
+
+      - name: Vectors embedded before the upgrade are found after it
+        # The drill above embedded a document on the previous release; the
+        # same workspace, asked with the key made then, must still find it.
+        # LanceDB's tables live on the volume across releases that move the
+        # LanceDB library.
+        env:
+          SURVIVE_STATE: ${{ runner.temp }}/anythingllm-survive.env
+        run: |
+          if [ ! -s "$SURVIVE_STATE" ]; then
+            echo "the drill seeded nothing (no previous release, or an unchanged compose file): nothing to read back"
+            exit 0
+          fi
+          ./tests/e2e-vectors-survive.sh check
 
       - name: Ollama is not reachable from outside the stack
         # Ollama's API has no authentication. The ollama template this one

@@ -71,6 +71,10 @@ services:
       EMBEDDING_ENGINE: native
       VECTOR_DB: lancedb
       DISABLE_TELEMETRY: "true"
+      # /api/utils/metrics answers anyone, signed in or not, with the version,
+      # single- or multi-user mode and disk usage. Off by default here (404);
+      # the price is the version line in the settings sidebar.
+      DISABLE_METRICS_ENDPOINT: ${ANYTHINGLLM_DISABLE_METRICS_ENDPOINT:-true}
     networks:
       - anythingllm-network
       - traefik-network

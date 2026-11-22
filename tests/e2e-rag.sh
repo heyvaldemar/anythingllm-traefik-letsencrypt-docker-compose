@@ -92,6 +92,15 @@ test_closed_without_the_password() {
   c="$(code "$BASE/api/workspaces")"
   [[ "$c" == 401 ]] || { fail "workspaces listed without a password: HTTP $c"; return 1; }
   echo "  no credentials, GET /api/workspaces: $c"
+  # Version, user mode and disk usage, to anyone, unless the compose file's
+  # default (ANYTHINGLLM_DISABLE_METRICS_ENDPOINT=true) is overridden.
+  c="$(code "$BASE/api/utils/metrics")"
+  if [[ "${ANYTHINGLLM_DISABLE_METRICS_ENDPOINT:-true}" == true ]]; then
+    [[ "$c" == 404 ]] || { fail "the unauthenticated metrics endpoint answered: HTTP $c"; return 1; }
+  else
+    [[ "$c" == 200 ]] || { fail "the metrics endpoint was turned on in .env and answered HTTP $c"; return 1; }
+  fi
+  echo "  no credentials, GET /api/utils/metrics: $c"
 }
 
 test_wrong_password_refused() {

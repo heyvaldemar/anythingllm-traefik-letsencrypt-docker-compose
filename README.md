@@ -98,6 +98,7 @@ The documents, their vectors, the questions and the answers do not. Some request
 - **The built-in embedder downloads its model once** (`Xenova/all-MiniLM-L6-v2`, 24 MB in the storage volume on 1.18.0) from Hugging Face, the first time a document is embedded. It is kept in the storage volume and backed up with it.
 - **AnythingLLM fetches a model catalogue and a price list** when it starts, observed in its logs on 1.18.0. They carry no document content.
 - **Telemetry is off** (`DISABLE_TELEMETRY=true` is set in the compose file).
+- **The unauthenticated metrics endpoint is off.** Since 1.20.0 AnythingLLM can turn off `/api/utils/metrics`, which tells anyone who asks, signed in or not, the version, the user mode and the disk usage. The compose file turns it off (`ANYTHINGLLM_DISABLE_METRICS_ENDPOINT=true`, a 404), and CI checks the 404. The settings sidebar then shows no version; set the variable to `false` in `.env` to bring both back.
 
 ## Supply chain trust
 
