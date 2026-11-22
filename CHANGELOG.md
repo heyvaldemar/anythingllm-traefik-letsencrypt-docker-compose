@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Security
+
+- **`/api/utils/metrics` is off.** It answers anyone, signed in or not, with the version, the user mode (single or multi) and the disk usage: a version is what someone needs to pick an exploit. 1.20.0 added `DISABLE_METRICS_ENDPOINT`, and the compose file now sets it from `ANYTHINGLLM_DISABLE_METRICS_ENDPOINT`, default `true`, so the endpoint answers 404. CI requires that 404 through Traefik. The cost is the version line in the settings sidebar, which reads it; `ANYTHINGLLM_DISABLE_METRICS_ENDPOINT=false` in `.env` brings both back.
+
+### Changed
+
+- **AnythingLLM 1.19.0 → 1.20.0** (`mintplexlabs/anythingllm:1.20.0`). Read by hand: the [v1.20.0 release notes](https://github.com/Mintplex-Labs/anything-llm/releases/tag/v1.20.0). The triage's review found none, because it looked under the image's name, `mintplexlabs/anythingllm`, instead of the source repository, `Mintplex-Labs/anything-llm`. What the release means here:
+  - Node 18 → 24 LTS inside the image. The image's user, entrypoint, health check and ports are the same as 1.19.0's.
+  - LanceDB 0.30.0, the vector store this stack keeps on its storage volume. To check that it reads what 1.19.0 wrote, the upgrade drill now embeds a document on the previous release first, with an API key made there. After the upgrade, the same workspace and the same key must find that document's phrase (`tests/e2e-vectors-survive.sh`). The volume then holds the embedder's model before the first backup, so the data archive takes longer, and the CI backup check now waits for that cycle's data archive instead of reading the log as soon as the database copy is done ([run 44983797659](https://github.com/heyvaldemar/anythingllm-traefik-letsencrypt-docker-compose/actions/runs/44983797659) checked two seconds too early).
+  - Access fixes this stack gets with the image: embed history routes now honour the embed's enabled, allowlist and session checks; browser-extension API keys stop working once their owner is no longer an admin or manager; user and workspace access is checked again when an agent invocation connects; generated pages carry frame protection; document folder names and moves can no longer nest paths.
+  - Also new: the browser extension's chat sidebar (full use needs a 1.20.0 server), a rebuilt PowerPoint agent tool, editable email approval cards for the Gmail and Outlook tools, MCP identity forwarding and per-server timeouts, and `/v1/mcp-servers` developer API endpoints.
 
 ## [1.0.18] - 2026-11-21
 

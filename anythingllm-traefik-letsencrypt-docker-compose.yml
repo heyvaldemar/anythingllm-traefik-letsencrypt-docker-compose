@@ -8,7 +8,7 @@
 x-images:
   traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:b7b1b31e6440de0b1f7c4e0f6cf0a0f3f004866761d30c025fe00c80daaf7d9c}}
   ollama: &ollama-image ${OLLAMA_IMAGE_TAG:-ollama/ollama:${OLLAMA_IMAGE_VERSION:-0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b300382154e1a4da56fc666bdb313b78ebdd912754}}
-  anythingllm: &anythingllm-image ${ANYTHINGLLM_IMAGE_TAG:-mintplexlabs/anythingllm:${ANYTHINGLLM_IMAGE_VERSION:-1.19.0@sha256:daf5a6ae9d363ed578e7d41e2d0668c7eaa604bd90b0ff27435f893b0906833e}}
+  anythingllm: &anythingllm-image ${ANYTHINGLLM_IMAGE_TAG:-mintplexlabs/anythingllm:${ANYTHINGLLM_IMAGE_VERSION:-1.20.0@sha256:3e2b7bc8eb0f73a130fc575f1372bd4e7189e399a63c037497fc183c141fc0ae}}
 
 networks:
   traefik-network:
@@ -71,6 +71,10 @@ services:
       EMBEDDING_ENGINE: native
       VECTOR_DB: lancedb
       DISABLE_TELEMETRY: "true"
+      # /api/utils/metrics answers anyone, signed in or not, with the version,
+      # single- or multi-user mode and disk usage. Off by default here (404);
+      # the price is the version line in the settings sidebar.
+      DISABLE_METRICS_ENDPOINT: ${ANYTHINGLLM_DISABLE_METRICS_ENDPOINT:-true}
     networks:
       - anythingllm-network
       - traefik-network
