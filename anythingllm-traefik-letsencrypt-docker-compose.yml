@@ -6,8 +6,8 @@
 # CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
 # the pins from these lines — this block is the single source of truth.
 x-images:
-  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:b7b1b31e6440de0b1f7c4e0f6cf0a0f3f004866761d30c025fe00c80daaf7d9c}}
-  ollama: &ollama-image ${OLLAMA_IMAGE_TAG:-ollama/ollama:${OLLAMA_IMAGE_VERSION:-0.40.17@sha256:ccc42bcd3d5fcf7ab0d532b300382154e1a4da56fc666bdb313b78ebdd912754}}
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:8301d6f60957a422f98918aacf2b01482abde3e74ead3719aabdb7c64045fe28}}
+  ollama: &ollama-image ${OLLAMA_IMAGE_TAG:-ollama/ollama:${OLLAMA_IMAGE_VERSION:-0.40.18@sha256:1cabd20e1762a7a8444bf4a7110b346d923cd77ab6c97c984434140638c913ec}}
   anythingllm: &anythingllm-image ${ANYTHINGLLM_IMAGE_TAG:-mintplexlabs/anythingllm:${ANYTHINGLLM_IMAGE_VERSION:-1.20.0@sha256:3e2b7bc8eb0f73a130fc575f1372bd4e7189e399a63c037497fc183c141fc0ae}}
 
 networks:
